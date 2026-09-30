@@ -5,13 +5,54 @@ Designed for the SNH-P6410BN, but maybe it'll work for your Smart Cam too
 
 by BreadCodes
 """
-
+from __future__ import annotations
 import json
 from typing import Any, Optional
 
 import requests
 from requests.auth import HTTPDigestAuth
 
+
+def parse_timezone(value: str) -> tuple[int, dict[str, str | list[str]]]:
+    """
+    Parse a timezone entry into an ID and normalized properties.
+    """
+    timezone_id, _, value = value.partition(":")
+    offset, _, locations = value.partition(")")
+
+    return int(timezone_id), {
+        "offset": offset.removeprefix("(GMT") or "+00:00",
+        "locations": [
+            location.strip().lower()
+            for location in locations.replace(":", ",").split(",")
+        ],
+    }
+
+def get_timezone_id(timezones: dict[int, dict[str, str | list[str]]], timezone: str | int) -> int:
+    """
+    Get timezone ID from either a timezone offset or location.
+
+    If an offset is provided, return the first timezone id that matches.
+    """
+    if isinstance(timezone, str):
+        timezone = timezone.strip().lower()
+
+        if timezone.isdigit():
+            timezone = int(timezone)
+
+    if isinstance(timezone, int):
+        if timezone in timezones:
+            return timezone
+        raise ValueError(f"Unknown timezone ID: {timezone}")
+
+    for timezone_id, timezone_info in timezones.items():
+        if (
+            timezone == timezone_info["offset"]
+            or timezone in timezone_info["locations"]
+        ):
+            return timezone_id
+
+    raise ValueError(f"Unknown timezone: {timezone}")
 
 class SmartCameraAPI:
     def __init__(self, ip: str, username: str = "admin", password: str = ""):
@@ -20,6 +61,7 @@ class SmartCameraAPI:
         self.password = password
         self.base_url = f"http://{ip}/stw-cgi-rest"
         self.auth = HTTPDigestAuth(username, password)
+        self._timezone_list = {}
 
     def _request(
         self, endpoint: str, method: str = "GET", body: Optional[dict] = None
@@ -54,6 +96,15 @@ class SmartCameraAPI:
             print(f"Request failed: {e}")
             return None
 
+    @property
+    def timezones(self):
+        if not self._timezone_list:
+            self._timezone_list = dict(
+                parse_timezone(value)
+                for value in self.get_timezone_list()["TimeZoneList"]
+            )
+        return self._timezone_list
+
     def get_device_info(self):
         return self._request("/system/deviceinfo")
 
@@ -62,6 +113,31 @@ class SmartCameraAPI:
 
     def get_timezone_list(self):
         return self._request("/system/date/timezonelist")
+
+    def set_timezone(self, timezone_id: int | None = None, dst_enable: bool | None = None):
+        # The REST API does not support setting LocalTime.
+        # Manual/PC time sync exists in the legacy CGI implementation,
+        # but those endpoints are not exposed in weboff mode.
+        # The REST API requires "SyncType" and only accepts "NTP" as its value in the put request body
+        if timezone_id is None and dst_enable is None:
+           raise  ValueError("At least one parameter must be provided")
+
+        if timezone_id is None or dst_enable is None:
+            current_date = self.get_date()
+
+            if timezone_id is None:
+                timezone_id = current_date["TimeZoneIndex"]
+
+            if dst_enable is None:
+                dst_enable = current_date["DSTEnable"]
+
+        body = {
+            "SyncType": "NTP",
+            "DSTEnable": dst_enable,
+            "TimeZoneIndex": timezone_id,
+        }
+
+        return self._request("/system/date", "PUT" , body)
 
     def perform_restart(self):
         return self._request("/system/power", "PUT")

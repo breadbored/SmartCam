@@ -10,7 +10,7 @@ import json
 import time
 from typing import Any
 
-from smartcam import SmartCameraAPI
+from smartcam import SmartCameraAPI, get_timezone_id
 
 
 def print_json(data: Any):
@@ -280,10 +280,40 @@ def interactive_menu(api: SmartCameraAPI):
                     f"Not connected to the selected SSID ({ssid}). Please check WiFi credentials or signal."
                 )
 
+    def set_timezone(api):
+        print("\nCurrent date/time settings:")
+        print_json(api.get_date())
+
+        timezone = input(
+            "\nTimezone (location, UTC offset, or timezone ID, blank to keep current): "
+        ).strip()
+
+        dst = input(
+            "Daylight saving time [y/n, blank to keep current]: "
+        ).strip().lower()
+
+        timezone_id = None
+        if timezone:
+            timezone_id = get_timezone_id(api.timezones, timezone)
+
+        if dst in ("y", "yes"):
+            dst_enable = True
+        elif dst in ("n", "no"):
+            dst_enable = False
+        elif not dst:
+            dst_enable = None
+        else:
+            raise ValueError("DST must be y, n, or blank")
+
+        if timezone_id is None and dst_enable is None:
+            return
+        api.set_timezone(timezone_id, dst_enable)
+
     operations = [
         ("Get Device Info", lambda: print_json(api.get_device_info())),
         ("Get Date/Time", lambda: print_json(api.get_date())),
-        ("Get Timezone List", lambda: print_json(api.get_timezone_list())),
+        ("Get Timezone List", lambda: print_json(api.get_timezone_list()["TimeZoneList"])),
+        ("Set Timezone (Interactive)", lambda: set_timezone(api)),
         ("Get Network Interface", lambda: print_json(api.get_interface())),
         ("Get WiFi Status", lambda: print_json(api.get_wifi())),
         ("Scan WiFi Networks", lambda: print_json(api.scan_wifi())),
@@ -392,6 +422,17 @@ def main():
     parser.add_argument("--led-off", action="store_true", help="Turn status LED off")
     parser.add_argument("--flip-v", action="store_true", help="Toggle vertical flip")
     parser.add_argument("--flip-h", action="store_true", help="Toggle horizontal flip")
+    parser.add_argument(
+        "--timezone",
+        default=None,
+        help="Set timezone by location, UTC offset, or timezone ID.",
+    )
+    parser.add_argument(
+        "--dst",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable daylight saving time.",
+    )
 
     args = parser.parse_args()
 
@@ -404,19 +445,29 @@ def main():
 
     api = SmartCameraAPI(args.ip, args.username, password)
 
-    executed_action = False
+    has_action = any(
+        (
+            args.info,
+            args.wifi,
+            args.scan,
+            args.streams,
+            args.led_on,
+            args.led_off,
+            args.flip_v,
+            args.flip_h,
+            args.timezone is not None,
+            args.dst is not None,
+        )
+    )
 
     if args.info:
         print_json(api.get_device_info())
-        executed_action = True
 
     if args.wifi:
         print_json(api.get_wifi())
-        executed_action = True
 
     if args.scan:
         print_json(api.scan_wifi())
-        executed_action = True
 
     if args.streams:
         print("\nAvailable RTSP Stream URLs:")
@@ -429,31 +480,34 @@ def main():
             print(f"  URL: {url}")
             print(f'  VLC: vlc "{url}"')
             print(f'  ffplay: ffplay -rtsp_transport tcp -i "{url}"')
-        executed_action = True
 
     if args.led_on:
         print_json(api.set_status_led("On"))
-        executed_action = True
 
     if args.led_off:
         print_json(api.set_status_led("Off"))
-        executed_action = True
 
     if args.flip_v:
         current = api.get_flip()
         if current:
             enabled = current.get("VerticalFlipEnable", False)
             print_json(api.set_vertical_flip(not enabled))
-        executed_action = True
 
     if args.flip_h:
         current = api.get_flip()
         if current:
             enabled = current.get("HorizontalFlipEnable", False)
             print_json(api.set_horizontal_flip(not enabled))
-        executed_action = True
 
-    if not executed_action:
+    if args.timezone is not None or args.dst is not None:
+        timezone_id = (
+            get_timezone_id(api.timezones, args.timezone)
+            if args.timezone
+            else None
+        )
+        print_json(api.set_timezone(timezone_id, args.dst))
+
+    if not has_action:
         interactive_menu(api)
 
 
